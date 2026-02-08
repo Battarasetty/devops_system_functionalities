@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: mongo-server
+    ports:
+      - "27017:27017"
+
+  redis:
+    image: redis:7
+    container_name: redis-server
+    ports:
+      - "6379:6379"
+
+  node1:
+    build: .
+    container_name: node-server-1
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - MONGO_URI=mongodb://mongo:27017/redisDemo
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - USE_CACHE=true
+    depends_on:
+      - mongo
+      - redis
+
+  node2:
+    build: .
+    container_name: node-server-2
+    ports:
+      - "3001:3000"  # map container port 3000 to host 3001
+    environment:
+      - PORT=3000
+      - MONGO_URI=mongodb://mongo:27017/redisDemo
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - USE_CACHE=true
+    depends_on:
+      - mongo
+      - redis
+
+  node3:
+    build: .
+    container_name: node-server-3
+    ports:
+      - "3002:3000"  # map container port 3000 to host 3002
+    environment:
+      - PORT=3000
+      - MONGO_URI=mongodb://mongo:27017/redisDemo
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - USE_CACHE=true
+    depends_on:
+      - mongo
+      - redis
