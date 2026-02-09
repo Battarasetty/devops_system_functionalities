@@ -11,6 +11,40 @@ app.use(express.json());
 // IMPORTANT for correct req.ip behind proxies
 app.set('trust proxy', true);
 
+/* ===================== STARTUP DEBUG ===================== */
+console.log('🚀 Server starting');
+console.log('SERVER_NAME:', process.env.SERVER_NAME);
+console.log('PORT:', process.env.PORT);
+
+/* ===================== LOGGING ===================== */
+app.use((req, res, next) => {
+    console.log(
+        `Request ${req.method} ${req.url} handled by ${process.env.SERVER_NAME}`
+    );
+    next();
+});
+
+/* ===================== ONE-TIME DELAY TEST ===================== */
+/*
+   Only SERVER_NAME=node-server-2
+   Only FIRST request
+   Delay = 40 seconds
+*/
+let firstRequestHandled = false;
+
+app.use(async (req, res, next) => {
+    if (
+        process.env.SERVER_NAME === 'node-server-2' &&
+        !firstRequestHandled
+    ) {
+        firstRequestHandled = true;
+        console.log('⏳ FIRST request delay on node-server-2 (40s)');
+        await new Promise(resolve => setTimeout(resolve, 40000));
+        console.log('✅ Delay finished on node-server-2');
+    }
+    next();
+});
+
 /* ===================== MongoDB ===================== */
 mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('MongoDB connected'))
@@ -33,12 +67,11 @@ const rateLimiter = async (req, res, next) => {
     try {
         const ip = req.ip;
         const key = `rate:${ip}`;
-        const LIMIT = 5;    // max requests
-        const WINDOW = 60;  // seconds
+        const LIMIT = 5;
+        const WINDOW = 60;
 
         const current = await redisClient.incr(key);
 
-        // first request → set TTL
         if (current === 1) {
             await redisClient.expire(key, WINDOW);
         }
@@ -68,13 +101,14 @@ const User = mongoose.model('User', UserSchema);
 // Health Check
 app.get('/health', async (req, res) => {
     try {
-        const mongoState = mongoose.connection.readyState; // 1 = connected
-        const redisState = redisClient.isReady;            // true = connected
+        const mongoState = mongoose.connection.readyState;
+        const redisState = redisClient.isReady;
 
         const status = {
             server: 'up',
             mongo: mongoState === 1 ? 'connected' : 'down',
             redis: redisState ? 'connected' : 'down',
+            handledBy: process.env.SERVER_NAME,
             uptime: process.uptime()
         };
 
@@ -128,5 +162,5 @@ app.get('/users/:id', async (req, res) => {
 
 /* ===================== SERVER ===================== */
 app.listen(process.env.PORT, () => {
-    console.log(`Server running on port ${process.env.PORT}`);
+    console.log(`✅ Server running on port ${process.env.PORT}`);
 });
