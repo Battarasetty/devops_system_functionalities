@@ -3,8 +3,6 @@ const express = require('express');
 const mongoose = require('mongoose');
 const redis = require('redis');
 
-const USE_CACHE = process.env.USE_CACHE === 'true';
-
 const app = express();
 app.use(express.json());
 
@@ -15,35 +13,6 @@ app.set('trust proxy', true);
 console.log('🚀 Server starting');
 console.log('SERVER_NAME:', process.env.SERVER_NAME);
 console.log('PORT:', process.env.PORT);
-
-/* ===================== LOGGING ===================== */
-app.use((req, res, next) => {
-    console.log(
-        `Request ${req.method} ${req.url} handled by ${process.env.SERVER_NAME}`
-    );
-    next();
-});
-
-/* ===================== ONE-TIME DELAY TEST ===================== */
-/*
-   Only SERVER_NAME=node-server-2
-   Only FIRST request
-   Delay = 40 seconds
-*/
-let firstRequestHandled = false;
-
-app.use(async (req, res, next) => {
-    if (
-        process.env.SERVER_NAME === 'node-server-2' &&
-        !firstRequestHandled
-    ) {
-        firstRequestHandled = true;
-        console.log('⏳ FIRST request delay on node-server-2 (40s)');
-        await new Promise(resolve => setTimeout(resolve, 40000));
-        console.log('✅ Delay finished on node-server-2');
-    }
-    next();
-});
 
 /* ===================== MongoDB ===================== */
 mongoose.connect(process.env.MONGO_URI)
@@ -62,103 +31,43 @@ redisClient.connect()
     .then(() => console.log('Redis connected'))
     .catch(err => console.error('Redis error:', err));
 
-/* ===================== RATE LIMITER ===================== */
-const rateLimiter = async (req, res, next) => {
+// ===================== QUEUE ROUTE =====================
+app.post('/queue', async (req, res) => {
     try {
-        const ip = req.ip;
-        const key = `rate:${ip}`;
-        const LIMIT = 5;
-        const WINDOW = 60;
+        const { message } = req.body;
+        if (!message) return res.status(400).json({ error: 'Message is required' });
 
-        const current = await redisClient.incr(key);
+        const taskId = `task_${Date.now()}`; // unique id for task
 
-        if (current === 1) {
-            await redisClient.expire(key, WINDOW);
-        }
+        // Push task to Redis list (queue)
+        await redisClient.lPush('task_queue', JSON.stringify({ taskId, message, createdAt: Date.now() }));
 
-        if (current > LIMIT) {
-            return res.status(429).json({
-                msg: 'Too many requests. Try again later.'
-            });
-        }
+        // Set initial status
+        await redisClient.set(`task_status:${taskId}`, 'queued');
 
-        next();
+        console.log(`✅ Task queued: ${taskId} - ${message}`);
+        res.json({ status: 'queued', taskId, message });
     } catch (err) {
-        console.error('Rate limiter error:', err);
-        next(); // fail-open
-    }
-};
-
-/* ===================== Schema ===================== */
-const UserSchema = new mongoose.Schema({
-    name: String,
-    email: String
-});
-const User = mongoose.model('User', UserSchema);
-
-/* ===================== ROUTES ===================== */
-
-// Health Check
-app.get('/health', async (req, res) => {
-    try {
-        const mongoState = mongoose.connection.readyState;
-        const redisState = redisClient.isReady;
-
-        const status = {
-            server: 'up',
-            mongo: mongoState === 1 ? 'connected' : 'down',
-            redis: redisState ? 'connected' : 'down',
-            handledBy: process.env.SERVER_NAME,
-            uptime: process.uptime()
-        };
-
-        const healthy = mongoState === 1 && redisState;
-
-        res.status(healthy ? 200 : 500).json(status);
-    } catch (err) {
-        res.status(500).json({ status: 'error', error: err.message });
+        console.error('Queue error:', err);
+        res.status(500).json({ error: 'Failed to queue task' });
     }
 });
 
-// CREATE USER
-app.post('/users', rateLimiter, async (req, res) => {
+// ===================== TASK STATUS ROUTE =====================
+app.get('/task-status/:id', async (req, res) => {
     try {
-        const user = await User.create(req.body);
-        res.json(user);
+        const taskId = req.params.id;
+        const status = await redisClient.get(`task_status:${taskId}`);
+
+        if (!status) return res.status(404).json({ error: 'Task not found' });
+
+        res.json({ taskId, status });
     } catch (err) {
-        res.status(500).json({ error: 'User creation failed' });
+        console.error('Task status error:', err);
+        res.status(500).json({ error: 'Failed to get task status' });
     }
 });
 
-// GET USER (WITH REDIS CACHE)
-app.get('/users/:id', async (req, res) => {
-    try {
-        const userId = req.params.id;
-        const key = `user:${userId}`;
-
-        if (!USE_CACHE) {
-            console.log('CACHE OFF → DB');
-            const user = await User.findById(userId);
-            if (!user) return res.status(404).send('Not found');
-            return res.json(user);
-        }
-
-        const cached = await redisClient.get(key);
-        if (cached) {
-            console.log('Cache HIT');
-            return res.json(JSON.parse(cached));
-        }
-
-        console.log('Cache MISS → DB');
-        const user = await User.findById(userId);
-        if (!user) return res.status(404).send('Not found');
-
-        await redisClient.setEx(key, 60, JSON.stringify(user));
-        res.json(user);
-    } catch (err) {
-        res.status(500).json({ error: 'Fetch failed' });
-    }
-});
 
 /* ===================== SERVER ===================== */
 app.listen(process.env.PORT, () => {
